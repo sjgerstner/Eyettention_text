@@ -326,10 +326,7 @@ if __name__ == '__main__':
 					#compute the scan path generated from the model when the first CLS token is given
 					sp_dnn = dnn.scanpath_generation(sn_emd=sn_input_ids_test,
 														 sn_mask=sn_attention_mask_test,
-														 sp_emd=sp_input_ids_test,
-														 sp_pos=sp_pos_test,
 														 word_ids_sn=None,
-														 word_ids_sp=None,
 														 sn_word_len = sn_word_len_test,
 														 le=le,
 														 max_pred_len=cf['max_pred_len'])
