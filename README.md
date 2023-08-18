@@ -51,9 +51,9 @@ If you use our code for your research, please consider citing our paper:
 
 ```bibtex
 @article{deng2023eyettention,
-  title={Eyettention: An Attention-based Dual-Sequence Model for Predicting Human Scanpaths during Reading},
+  title={Eyettention: {A}n Attention-based Dual-Sequence Model for Predicting Human Scanpaths during Reading},
   author={Deng, Shuwen and Reich, David R and Prasse, Paul and Haller, Patrick and Scheffer, Tobias and J{\"a}ger, Lena A},
-  journal={Proceedings of the ACM on Human-Computer Interaction},
+  journal={Proceedings of the {ACM} on Human-Computer Interaction},
   volume={7},
   number={ETRA},
   pages={1--24},
