@@ -1,8 +1,8 @@
 # Adapting Eyettention to longer texts
 ## Dataset
-Also clone sjgerstner/SB-SAT.
+Also clone sjgerstner/SB-SAT. This directory should be in the same directory as Eyettention_text, i.e. Eyettention_text and SB-SAT are subdirectories of the same directory.
 ## Training
-The training code is main-sat.py.
+The training code is main_sat.py.
 
 # Original README
 # Eyettention: An Attention-based Dual-Sequence Model for Predicting Human Scanpaths during Reading
