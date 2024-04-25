@@ -1,3 +1,10 @@
+# Adapting Eyettention to longer texts
+## Dataset
+Also clone sjgerstner/SB-SAT.
+## Training
+The training code is main-sat.py.
+
+# Original README
 # Eyettention: An Attention-based Dual-Sequence Model for Predicting Human Scanpaths during Reading
 [![paper](https://img.shields.io/static/v1?label=paper&message=download%20link&color=brightgreen)](https://arxiv.org/abs/2304.10784)
 
