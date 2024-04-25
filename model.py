@@ -9,6 +9,10 @@ from transformers import BertModel, BertConfig
 class Eyettention(nn.Module):
 	def __init__(self, cf):
 		super(Eyettention, self).__init__()
+
+		if 'max_saccade_len' not in cf:
+			cf['max_saccade_len'] = cf['max_sn_len']
+
 		self.cf = cf
 		self.window_width = 1 #D
 		self.atten_type = cf["atten_type"]
@@ -69,7 +73,7 @@ class Eyettention(nn.Module):
 							 self.dropout_dense,
 							 nn.Linear(256, 256),
 							 nn.ReLU(),
-							 nn.Linear(256, self.cf["max_sn_len"]*2-3), #number of output classes
+							 nn.Linear(256, self.cf["max_saccade_len"]*2-3), #number of output classes
 		)
 
 		#for scanpath generation
@@ -118,7 +122,7 @@ class Eyettention(nn.Module):
 		return x, sn_mask_word
 
 
-	def cross_attention(self, ht, hs, sn_mask, cur_word_index):
+	def cross_attention(self, ht, hs, sn_mask, cur_word_index, sn_newlines=None):
 		# General Attention:
 		# score(ht,hs) = (ht^T)(Wa)hs
 		# hs is the output from word-Sequence Encoder
@@ -132,9 +136,21 @@ class Eyettention(nn.Module):
 		else:#local attention
 			# current fixated word index
 			aligned_position = cur_word_index
+			#print('aligned_position', aligned_position.shape)
+			#print('sn_mask', sn_mask.shape)
+			#line borders
+			line_start = torch.zeros([sn_mask.shape[0]])
+			line_end = torch.full([sn_mask.shape[0]], self.cf['max_sn_len'])
+			#print(line_start.shape)
+			if sn_newlines is not None:
+				for item in range(sn_mask.shape[0]):
+					line_start[item] = next((i for i in reversed(range(aligned_position[item])) if sn_newlines[item,i]), 0)#first word of line
+					line_end[item] = next((i-1 for i in range(aligned_position[item], len(sn_newlines)) if sn_newlines[item,i]), self.cf['max_sn_len']-1)#last word of line
+			#print('line_start', line_start.shape)
 			# Get window borders
-			left = torch.where(aligned_position - self.window_width >= 0, aligned_position - self.window_width, 0)
-			right = torch.where(aligned_position + self.window_width <= self.cf["max_sn_len"]-1, aligned_position + self.window_width, self.cf["max_sn_len"]-1)
+			left = torch.where(aligned_position - self.window_width >= line_start, aligned_position - self.window_width, line_start)
+			right = torch.where(aligned_position + self.window_width <= line_end, aligned_position + self.window_width, line_end)
+			#print('left', left.shape)
 
 			#exclude padding tokens
 			#only consider words in the window
@@ -151,7 +167,7 @@ class Eyettention(nn.Module):
 
 		return att_weight
 
-	def decode(self, sp_emd, sn_mask, sp_pos, enc_out, sp_fix_dur, sp_landing_pos, word_ids_sp):
+	def decode(self, sp_emd, sn_mask, sp_pos, enc_out, sp_fix_dur, sp_landing_pos, word_ids_sp, sn_newlines=None):
 		# Fixation-Sequence Encoder + Decoder
 		# Initialize hidden state and cell state with zeros,
 		hn = torch.zeros(8, sp_emd.shape[0], self.hidden_size).to(sp_emd.device)
@@ -206,7 +222,8 @@ class Eyettention(nn.Module):
 			att_weight = self.cross_attention(ht=hx8,
 												hs=enc_out,
 												sn_mask=sn_mask,
-												cur_word_index=sp_pos[:, i])
+												cur_word_index=sp_pos[:, i],
+												sn_newlines=sn_newlines)
 			atten_weights_batch = torch.cat([atten_weights_batch, att_weight], dim=1)
 
 			context = torch.matmul(att_weight, enc_out)    # [batch, 1, units]
@@ -221,7 +238,7 @@ class Eyettention(nn.Module):
 		return output.permute(1,0,2), atten_weights_batch                           # [batch, step, dec_o_dim]
 
 
-	def forward(self, sn_emd, sn_mask, sp_emd, sp_pos, word_ids_sn, word_ids_sp, sp_fix_dur, sp_landing_pos, sn_word_len):
+	def forward(self, sn_emd, sn_mask, sp_emd, sp_pos, word_ids_sn, word_ids_sp, sp_fix_dur, sp_landing_pos, sn_word_len, sn_newlines=None):
 		x, sn_mask_word = self.encode(sn_emd, sn_mask, word_ids_sn, sn_word_len)  # [batch, step, units], [batch, units]
 
 		if sn_mask_word is None:#for Chinese dataset without token pooling
@@ -241,7 +258,8 @@ class Eyettention(nn.Module):
 												x,
 												sp_fix_dur,
 												sp_landing_pos,
-												word_ids_sp)    # [batch, step, dec_o_dim]
+												word_ids_sp,
+												sn_newlines)    # [batch, step, dec_o_dim]
 
 		return pred, atten_weights
 
@@ -251,7 +269,9 @@ class Eyettention(nn.Module):
 									word_ids_sn,
 									sn_word_len,
 									le,
-									max_pred_len=60):
+									sn_newlines=None,
+									max_pred_len=60,
+									return_hidden=False):
 		#compute the scan path generated from the model when the first CLS taken is given
 		enc_out, sn_mask_word = self.encode(sn_emd, sn_mask, word_ids_sn, sn_word_len)
 		if sn_mask_word is None:
@@ -264,6 +284,9 @@ class Eyettention(nn.Module):
 		# Initialize hidden state and cell state with zeros,
 		hn = torch.zeros(8, sn_emd.shape[0], self.hidden_size).to(sn_emd.device)
 		hc = torch.zeros(8, sn_emd.shape[0], self.hidden_size).to(sn_emd.device)
+		if return_hidden:
+			last_hidden = torch.zeros(sn_emd.shape[0], self.hidden_size*2+1).to(sn_emd.device)
+			finished = torch.zeros(sn_emd.shape[0])
 		hx, cx = hn[0,:,:], hc[0,:,:]
 		hx2, cx2 = hn[1,:,:], hc[1,:,:]
 		hx3, cx3 = hn[2,:,:], hc[2,:,:]
@@ -307,7 +330,8 @@ class Eyettention(nn.Module):
 			att_weight = self.cross_attention(ht=hx8,
 												hs=enc_out,
 												sn_mask=sn_mask,
-												cur_word_index=output[-1])
+												cur_word_index=output[-1],
+												sn_newlines=sn_newlines)
 
 			context = torch.matmul(att_weight, enc_out)    # [batch, 1, units]
 			hc = torch.cat([context.squeeze(1),hx8],dim=1)      # [batch, units *2]
@@ -332,6 +356,9 @@ class Eyettention(nn.Module):
 			for i in range(pred_pos.shape[0]):
 				if pred_pos[i] > sn_len[i]:
 					pred_pos[i] = sn_len[i]+1
+					if return_hidden and (finished[i]==0):
+						last_hidden[i,:] = hc[i,:]
+						finished[i]=1
 				elif pred_pos[i] < 1:
 					pred_pos[i] = 1
 
@@ -340,6 +367,8 @@ class Eyettention(nn.Module):
 				else:
 					input_ids.append(sn_emd[i, pred_pos[i]])
 			output.append(pred_pos)
+			if return_hidden and torch.all(finished):
+				break
 
 			#prepare next timestamp input token
 			pred_counter += 1
@@ -360,6 +389,11 @@ class Eyettention(nn.Module):
 			dec_in = torch.cat((dec_emb_in, torch.zeros(dec_emb_in.shape[0],2).to(sn_emd.device)), dim=1)
 
 		output = torch.stack(output,dim=0)                     # [step, batch]
+		if return_hidden:
+			for i in range(pred_pos.shape[0]):
+				if finished[i]==0:
+					last_hidden[i,:] = hc[i,:]
+			return output.permute(1,0), density_prediction, last_hidden
 		return output.permute(1,0),  density_prediction                      # [batch, step]
 
 

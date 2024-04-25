@@ -2,18 +2,10 @@
 import numpy as np
 import pandas as pd
 import os
-import seaborn as sns
 from typing import Tuple
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizerFast, BertTokenizer, BertForTokenClassification
+from torch.utils.data import Dataset
 import torch
-import torch.nn.functional as F
-import seaborn as sns
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-import json
-from collections import Counter
-import torch.nn as nn
 
 def load_bsc() -> Tuple[pd.DataFrame, ...]:
 	"""
@@ -27,7 +19,7 @@ def load_bsc() -> Tuple[pd.DataFrame, ...]:
 	eyemovement_df = pd.read_csv(bsc_emd_path, delimiter='\t')
 	return word_info_df, pos_info_df, eyemovement_df
 
-def load_corpus(corpus, task=None):
+def load_corpus(corpus, by_page=True):
 	if corpus == 'BSC':
 		#load word data, POS data, EM data
 		word_info_df, pos_info_df, eyemovement_df = load_bsc()
@@ -38,6 +30,223 @@ def load_corpus(corpus, task=None):
 		word_info_df = pd.read_csv('./Data/celer/data_v2.0/sent_ia.tsv', delimiter='\t')
 		word_info_df['IA_LABEL'] = word_info_df.IA_LABEL.replace('\t(.*)', '', regex=True)
 		return word_info_df, None, eyemovement_df
+	elif corpus == 'SB-SAT':
+		eyemovement_df = pd.read_csv('../SB-SAT/fixation/18sat_fixfinal.csv')
+		#filter out unwanted fixations
+		eyemovement_df = eyemovement_df[eyemovement_df["type"]=="reading"]
+		eyemovement_df = eyemovement_df[eyemovement_df["CURRENT_FIX_INTEREST_AREA_LABEL"]!=""]
+		eyemovement_df = eyemovement_df[eyemovement_df["CURRENT_FIX_INTEREST_AREA_LABEL"]!="(FIN)"]
+		#the first three ids are buttons and not part of the text
+		eyemovement_df = eyemovement_df[eyemovement_df.CURRENT_FIX_INTEREST_AREA_ID>3]
+		eyemovement_df.CURRENT_FIX_INTEREST_AREA_ID -=3 #first word in text has id 1, then [CLS] will have 0
+		#eyemovement_df['CURRENT_FIX_INTEREST_AREA_LABEL'] = eyemovement_df.CURRENT_FIX_INTEREST_AREA_LABEL.replace('\t(.*)', '', regex=True)
+		#Make array with page titles #CHANGED
+		if by_page:
+			sn_list = list(eyemovement_df.page_name.unique())
+		else:
+			sn_list = list(eyemovement_df.book_name.unique())
+		#text dict, entries are title:text
+		#in parallel, count words per page and update ids in eyemovement_df
+		text_dict = dict([(title, '') for title in sn_list])
+		if by_page:
+			for title in sn_list:
+				with open(f'../SB-SAT/stimuli/reading screenshot/{title}.txt') as f:
+					text_dict[title] = f.read()[:-1]#get rid of the text editor's newline at the end
+		else:
+			for title in sn_list:
+				word_count=0
+				for k in range(1,7):#each text has at most 6 pages
+					eyemovement_df.loc[eyemovement_df["page_name"]==f'reading-{title}-{k}', "CURRENT_FIX_INTEREST_AREA_ID"] += word_count
+					try:
+						with open(f'../SB-SAT/stimuli/reading screenshot/reading-{title}-{k}.txt') as f:
+							for line in f:
+								if line=='\n':
+									text_dict[title] += '\n\n'#paragraphs are marked this way
+								else:
+									text_dict[title] += line[:-1] + ' '#without newline as there is no new paragraph, but with a space instead
+						word_count = len(text_dict[title].split())
+					except:
+						break
+				text_dict[title] = text_dict[title][:-1]#remove the last space
+		return text_dict, sn_list, eyemovement_df
+	
+class satdataset(Dataset):
+	def __init__(self, word_info_df, eyemovement_df, cf, reader_list, sn_list, tokenizer, by_page=True):
+		self.data = _process_sat(word_info_df, eyemovement_df, cf, reader_list, sn_list, tokenizer, by_page)
+	def __len__(self):
+		return len(self.data["SN_input_ids"])
+	def __getitem__(self,idx):
+		sample = {}
+		sample["sn_input_ids"] = self.data["SN_input_ids"][idx,:]
+		sample["sn_attention_mask"] = self.data["SN_attention_mask"][idx,:]
+		sample["sn_word_len"] = self.data['SN_WORD_len'][idx,:]
+		sample['word_ids_sn'] =  self.data['WORD_ids_sn'][idx,:]
+
+		sample["sp_input_ids"] = self.data["SP_input_ids"][idx,:]
+		sample["sp_attention_mask"] = self.data["SP_attention_mask"][idx,:]
+		sample['word_ids_sp'] =  self.data['WORD_ids_sp'][idx,:]
+
+		sample["sp_pos"] = self.data["SP_ordinal_pos"][idx,:]
+		sample["sp_fix_dur"] = self.data["SP_fix_dur"][idx,:]
+		sample["sp_landing_pos"] = self.data["SP_landing_pos"][idx,:]
+
+		sample["sub_id"] = self.data["sub_id"][idx]
+
+		#NEW: word indices BEFORE which a newline occurs
+		sample["sn_newlines"] = self.data["SN_newlines"][idx,:]
+
+		return sample
+
+def _process_sat(text_dict, eyemovement_df, cf, reader_list, sn_list, tokenizer, by_page=True):
+	SN_input_ids, SN_attention_mask, SN_WORD_len, WORD_ids_sn = [], [], [], []
+	SP_input_ids, SP_attention_mask, WORD_ids_sp = [], [], []
+	SP_ordinal_pos, SP_landing_pos, SP_fix_dur = [], [], []
+	sub_id_list =  []
+	SN_newlines = [] #NEW
+	for sn_id in tqdm(sn_list):
+		#process sentence sequence
+		if by_page:
+			sn_df = eyemovement_df[eyemovement_df.page_name==sn_id]
+		else:
+			sn_df = eyemovement_df[eyemovement_df.book_name==sn_id]
+		sn = text_dict[sn_id]
+		#NEW: clean final paragraph break if necessary
+		if sn.endswith('\n'):
+			sn = sn[:-1]
+		#print(sn)
+		#tokenization and padding
+		tokenizer.padding_side = 'right'
+		sn_str = '[CLS]' + ' ' + (sn.replace('\n\n', ' [SEP]\n')) + ' ' + '[SEP]'#CHANGED: replace double newlines with [SEP]
+		#print(sn_str)
+		#NEW
+		line_list = sn_str.splitlines()
+		#print(line_list)
+		line_len = np.array([len(line.split()) for line in line_list])
+		#print(line_len)
+		cum_line_len = np.cumsum(line_len[:-1])#linebreak not relevant after last line
+		#print(cum_line_len)
+		sn_newlines = np.full(cf["max_sn_len"], False)
+		for i in cum_line_len:
+			sn_newlines[i] = True
+		#print(sn_newlines)
+
+		#pre-tokenized input
+		tokens = tokenizer(sn_str.split(),
+							add_special_tokens = False,
+							truncation=True,
+							max_length = cf['max_sn_token'],
+							padding = 'max_length',
+							return_attention_mask=True,
+							is_split_into_words=True,
+							return_overflowing_tokens = not by_page,
+							stride=32,
+							)
+		#print(tokens)
+		encoded_sn = tokens['input_ids']
+		mask_sn = tokens['attention_mask']
+		#use offset mapping to determine if two tokens are in the same word.
+		#index start from 0, CLS -> 0 and SEP -> last index
+		word_ids_sn = tokens.word_ids()
+		#print(word_ids_sn)
+		word_ids_sn = [val if val is not None else np.nan for val in word_ids_sn]
+		#print(word_ids_sn)
+		if by_page:
+			first = 1
+			last = next(i for i in reversed(range(len(word_ids_sn))) if word_ids_sn[i] is not np.nan) -1
+		else:#TODO loop over the sequences in word_ids_sn?
+			index = None #TODO
+			#pretend we had a sequence on its own:
+			#make sure the text begins with [CLS] and ends with [SEP], as it will be a training example on its own
+			#no lost info thanks to the stride and having added [CLS]/[SEP] at the very beginning/end
+			first = word_ids_sn[1]
+			last_index = next(i for i in reversed(range(len(word_ids_sn))) if word_ids_sn[i] is not np.nan)
+			last = word_ids_sn[last_index-1]
+			word_ids_sn = [id - first+1 for id in word_ids_sn]
+			word_ids_sn[0] = 0
+			word_ids_sn[last_index] = last+1
+			encoded_sn[index][0] = tokenizer.cls_token_id
+			encoded_sn[index][last_index] = tokenizer.sep_token_id
+		#choose corresponding fixations
+		short_sn_df = sn_df[sn_df["CURRENT_FIX_INTEREST_AREA_ID"]>=first]
+		short_sn_df = short_sn_df[short_sn_df["CURRENT_FIX_INTEREST_AREA_ID"]<=last]
+		short_sn_df.CURRENT_FIX_INTEREST_AREA_ID -= (first-1)
+		#print(short_sn_df.CURRENT_FIX_INTEREST_AREA_ID.max())
+		#compute 1/word length for each word
+		sn_word_len = compute_word_length_celer(np.array([len(word) for word in sn_str.split()[first:last+1]]))
+		#process fixation sequence
+		for sub_id in reader_list:
+			sub_df = short_sn_df[short_sn_df['Session_Name_']==sub_id]
+			# remove fixations on non-words
+			if len(sub_df) == 0:
+				#no scanpath data found for the subject
+				continue
+
+			#sub_id convertible to integer
+			sub_id = sub_id[3:]
+
+			#prepare decoder input and output
+			#I don't know how to find out fixation location within the word with this dataset, hence None
+			sp_word_pos, sp_fix_loc, sp_fix_dur = sub_df.CURRENT_FIX_INTEREST_AREA_ID.values, None, sub_df.CURRENT_FIX_DURATION.values
+
+			sp_ordinal_pos = sp_word_pos.astype(int)
+			SP_ordinal_pos.append(sp_ordinal_pos)
+			SP_fix_dur.append(sp_fix_dur)
+			SP_landing_pos.append(sp_fix_loc)
+
+			sp_token = [sn_str.split()[int(i)+first-1] for i in sp_ordinal_pos]
+			sp_token_str = '[CLS]' + ' ' + ' '.join(sp_token) + ' ' + '[SEP]'
+
+			#tokenization and padding for scanpath, i.e. fixated word sequence
+			sp_tokens = tokenizer.encode_plus(sp_token_str.split(),
+											add_special_tokens = False,
+											truncation=True,
+											max_length = cf['max_sp_token'],
+											padding = 'max_length',
+											return_attention_mask=True,
+											is_split_into_words=True)
+			encoded_sp = sp_tokens['input_ids']
+			mask_sp = sp_tokens['attention_mask']
+			#index start from 0, CLS -> 0 and SEP -> last index
+			word_ids_sp = sp_tokens.word_ids()
+			word_ids_sp = [val if val is not None else np.nan for val in word_ids_sp]
+			SP_input_ids.append(encoded_sp)
+			SP_attention_mask.append(mask_sp)
+			WORD_ids_sp.append(word_ids_sp)
+
+			#sentence information
+			SN_input_ids.append(encoded_sn)#TODO index if not by_page
+			SN_attention_mask.append(mask_sn)#TODO same
+			SN_WORD_len.append(sn_word_len)
+			WORD_ids_sn.append(word_ids_sn)
+			sub_id_list.append(sub_id)
+			SN_newlines.append(sn_newlines)
+
+	#padding for batch computation
+	SP_ordinal_pos = pad_seq(SP_ordinal_pos, max_len=(cf["max_sp_len"]), pad_value=0)#pad value CHANGED from max_seq_len to 0 because here max_seq_len is 512>511
+	SP_fix_dur = pad_seq(SP_fix_dur, max_len=(cf["max_sp_len"]), pad_value=0)
+	SP_landing_pos = pad_seq(SP_landing_pos, cf["max_sp_len"], pad_value=0, dtype=np.float32)
+	SN_WORD_len = pad_seq_with_nan(SN_WORD_len, cf["max_sn_len"], dtype=np.float32)
+
+	#assign type
+	SN_input_ids = np.asarray(SN_input_ids, dtype=np.int64)
+	SN_attention_mask = np.asarray(SN_attention_mask, dtype=np.float32)
+	SP_input_ids = np.asarray(SP_input_ids, dtype=np.int64)
+	SP_attention_mask = np.asarray(SP_attention_mask, dtype=np.float32)
+	sub_id_list = np.asarray(sub_id_list, dtype=np.int64)
+	WORD_ids_sn = np.asarray(WORD_ids_sn)
+	WORD_ids_sp = np.asarray(WORD_ids_sp)
+	SN_newlines = np.asarray(SN_newlines)
+	#print(SN_newlines)
+
+	data = {"SN_input_ids": SN_input_ids, "SN_attention_mask": SN_attention_mask, "SN_WORD_len": SN_WORD_len, "WORD_ids_sn": WORD_ids_sn,
+	 		"SP_input_ids": SP_input_ids, "SP_attention_mask": SP_attention_mask, "WORD_ids_sp": WORD_ids_sp,
+			"SP_ordinal_pos": np.array(SP_ordinal_pos), "SP_landing_pos": np.array(SP_landing_pos), "SP_fix_dur": np.array(SP_fix_dur),
+			"sub_id": sub_id_list,
+			"SN_newlines": SN_newlines
+			}
+	#print(data["SP_ordinal_pos"])
+
+	return data
 
 def compute_BSC_word_length(sn_df):
 	word_len = sn_df.LEN.values
@@ -53,6 +262,9 @@ def compute_BSC_word_length(sn_df):
 def pad_seq(seqs, max_len, pad_value, dtype=np.compat.long):
 	padded = np.full((len(seqs), max_len), fill_value=pad_value, dtype=dtype)
 	for i, seq in enumerate(seqs):
+		if np.any(seq==None):
+			padded[i,] = 0
+			continue
 		padded[i, 0] = 0
 		padded[i, 1:(len(seq)+1)] = seq
 		if pad_value !=0:
@@ -220,9 +432,8 @@ def load_label(sp_pos, cf, labelencoder, device):
 	label = torch.where(label>cf["max_sn_len"]-1, cf["max_sn_len"]-1, label).to('cpu').detach().numpy()
 	label = labelencoder.transform(label.reshape(-1)).reshape(label.shape[0], label.shape[1])
 	if device == 'cpu':
-		pad_mask = pad_mask.to('cpu').detach().numpy()
-	else:
-		label = torch.from_numpy(label).to(device)
+		pad_mask = pad_mask.to('cpu').detach()#.numpy()
+	label = torch.from_numpy(label).to(device)
 	return pad_mask, label
 
 
