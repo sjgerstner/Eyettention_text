@@ -78,13 +78,14 @@ if __name__ == '__main__':
 			"atten_type": args.atten_type,
 			"batch_size": 2,#CHANGED TODO
 			#following 4 lines CHANGED. Can't get more than 512 tokens into BERT!#TODO
-			"max_sn_len": 147, #max number of words in a sentence, include start token and end token, #or 512? #needs to be the actual sp len + 1 for the CLS
+			"max_sn_len": 148, #max number of words in a sentence, include start token and end token, #or 512? #needs to be the actual sn len + 2 for the CLS
 			"max_sn_token": 183, #maximum number of tokens a sentence includes. include start token and end token
-			"max_sp_len": 395, #max number of words in a scanpath, include start token and end token #or 1130? #needs to be the actual sp len + 1 for the CLS
+			"max_sp_len": 396, #max number of words in a scanpath, include start token and end token #or 1130? #needs to be the actual sp len + 2 for the CLS
 			"max_sp_token": 512, #maximum number of tokens a scanpath includes. include start token and end token UNNECESSARY
 			"norm_type": 'z-score',
 			"earlystop_patience": 20,
-			"max_pred_len":args.max_pred_len
+			"max_pred_len":args.max_pred_len,
+			"device":device
 			}
 
 	#Encode the label into interger categories, setting the exclusive category 'cf["max_sn_len"]-1' as the end sign
@@ -360,7 +361,7 @@ if __name__ == '__main__':
 													 le=le,
 													 max_pred_len=cf['max_pred_len'])
 
-					sp_dnn, sp_human = prepare_scanpath(sp_dnn.detach().to('cpu').numpy(), sn_len, sp_pos_test, cf)
+					sp_dnn, sp_human = prepare_scanpath(sp_dnn[0].detach().to('cpu').numpy(), sn_len, sp_pos_test, cf)
 					sp_dnn_list.extend(sp_dnn)
 					sp_human_list.extend(sp_human)
 

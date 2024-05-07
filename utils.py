@@ -222,7 +222,7 @@ def _process_sat(text_dict, eyemovement_df, cf, reader_list, sn_list, tokenizer,
 			SN_newlines.append(sn_newlines)
 
 	#padding for batch computation
-	SP_ordinal_pos = pad_seq(SP_ordinal_pos, max_len=(cf["max_sp_len"]), pad_value=0)#pad value CHANGED from max_seq_len to 0 because here max_seq_len is 512>511
+	SP_ordinal_pos = pad_seq(SP_ordinal_pos, max_len=(cf["max_sp_len"]), pad_value=cf["max_sn_len"])#if you change the pad value, modify prepare_scanpath accordingly
 	SP_fix_dur = pad_seq(SP_fix_dur, max_len=(cf["max_sp_len"]), pad_value=0)
 	SP_landing_pos = pad_seq(SP_landing_pos, cf["max_sp_len"], pad_value=0, dtype=np.float32)
 	SN_WORD_len = pad_seq_with_nan(SN_WORD_len, cf["max_sn_len"], dtype=np.float32)
@@ -442,7 +442,7 @@ def likelihood(pred, label, mask):
 	#res = F.nll_loss(torch.tensor(pred), torch.tensor(label))
 	label = one_hot_encode(label, pred.shape[1])
 	res = np.sum(np.multiply(pred, label), axis=1)
-	res = np.sum(res * ~mask)/np.sum(~mask)
+	res = np.sum(res * np.array(~mask))/np.sum(np.array(~mask))
 	return res
 
 def eval_log_llh(dnn_out, label, pad_mask):
