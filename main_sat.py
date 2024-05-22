@@ -73,7 +73,7 @@ if __name__ == '__main__':
 			"lr": 1e-3,
 			"max_grad_norm": 10,
 			"n_epochs": 1000,
-			"n_folds": 1,
+			"n_folds": 5,
 			"dataset": 'SB-SAT',
 			"atten_type": args.atten_type,
 			"batch_size": 8,#TODO
