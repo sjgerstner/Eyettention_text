@@ -142,9 +142,6 @@ if __name__ == '__main__':
 	dataset_val = satdataset(word_info_df, eyemovement_df, cf, reader_list_val, sn_list_val, tokenizer)
 	val_dataloaderr = DataLoader(dataset_val, batch_size = cf["batch_size"], shuffle = False, drop_last=True)
 
-	dataset_test = satdataset(word_info_df, eyemovement_df, cf, reader_list_test, sn_list_test, tokenizer)
-	test_dataloaderr = DataLoader(dataset_test, batch_size = cf["batch_size"], shuffle = False, drop_last=False)
-
 	#z-score normalization for gaze features
 	fix_dur_mean, fix_dur_std = calculate_mean_std(dataloader=train_dataloaderr, feat_key="sp_fix_dur", padding_value=0, scale=1000)
 	landing_pos_mean, landing_pos_std = calculate_mean_std(dataloader=train_dataloaderr, feat_key="sp_landing_pos", padding_value=0)
