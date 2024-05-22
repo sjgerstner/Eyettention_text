@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import os
 from typing import Tuple
+import re
 from torch.utils.data import Dataset
 import torch
 from tqdm import tqdm
@@ -30,6 +31,54 @@ def load_corpus(corpus, by_page=True):
 		word_info_df = pd.read_csv('./Data/celer/data_v2.0/sent_ia.tsv', delimiter='\t')
 		word_info_df['IA_LABEL'] = word_info_df.IA_LABEL.replace('\t(.*)', '', regex=True)
 		return word_info_df, None, eyemovement_df
+	elif corpus == 'meco':
+		import pyreadr
+		# Reading the R dataset
+		eye_tracking_path = '../meco/joint_fix_trimmed.rda'
+		texts_path = '../meco/supp texts.csv'
+		meco_rda = pyreadr.read_r(eye_tracking_path)
+		# Extracting the DataFrame
+		meco_df = meco_rda["joint.fix"]
+		# Creating a list of sentences 5 x 14,
+		sentences_df = pd.read_csv(texts_path)
+		# English only
+		meco_df = meco_df[meco_df['lang']=='en']
+		sentences_df = sentences_df[sentences_df['Unnamed: 0']=='English']
+		# Renaming the text columns to numeric indices
+		text_columns = sentences_df.columns[1:-2]  # Excluding the first language column and last two unnamed columns
+		renamed_columns = {name: str(index) for index, name in enumerate(text_columns, start=1)}
+		sentences_df.rename(columns=renamed_columns, inplace=True)
+		sentences_df.rename(columns={'Unnamed: 0': 'Language'}, inplace=True)
+		sentences_df.loc[1,'Language'] = 'en'
+		# Dropping the last two unnamed columns
+		sentences_df.drop(columns=['Unnamed: 13', 'Unnamed: 14'], inplace=True)
+		# Final 13 x 13 df
+		sentences_df = sentences_df.dropna(how='all')
+		# Creating a list of unique readers (subjects)
+		readers = list(meco_df['uniform_id'].dropna().unique())
+		# introduce newlines
+		for col in sentences_df.columns:
+			text = sentences_df[col].iloc[0]
+			text = text.replace("\\n", "\n")
+			prev_line = 1
+			new_text = re.split(r'-|\s+', text)
+			text_df = meco_df[meco_df['renamed_trial']==' '.join(new_text[:5])]
+			nwords = len(new_text)
+			for id in range(nwords):
+				new_line_series = text_df.loc[text_df["wordnum"]==id+1, ["line", "line.word"]]
+				if new_line_series.empty:
+					continue
+				new_line = int(new_line_series["line"].iloc[0])
+				# print('line number', new_line)
+				# print('position on line:', new_line_series["line.word"].iloc[0])
+				if new_line > prev_line:
+					prev_line=new_line
+					words_to_go_back = int(new_line_series["line.word"].iloc[0])
+					new_text[id-words_to_go_back] = new_text[id-words_to_go_back]+'\n'
+			new_str = ' '.join(new_text)
+			new_str = new_str.replace('\n ', '\n')
+			sentences_df[col].iloc[0] = new_str
+		return meco_df, sentences_df, readers
 	elif corpus == 'SB-SAT':
 		eyemovement_df = pd.read_csv('../SB-SAT/fixation/18sat_fixfinal.csv')
 		#filter out unwanted fixations
@@ -238,12 +287,20 @@ def _process_sat(text_dict, eyemovement_df, cf, reader_list, sn_list, tokenizer,
 	SN_newlines = np.asarray(SN_newlines)
 	#print(SN_newlines)
 
-	data = {"SN_input_ids": SN_input_ids, "SN_attention_mask": SN_attention_mask, "SN_WORD_len": SN_WORD_len, "WORD_ids_sn": WORD_ids_sn,
-	 		"SP_input_ids": SP_input_ids, "SP_attention_mask": SP_attention_mask, "WORD_ids_sp": WORD_ids_sp,
-			"SP_ordinal_pos": np.array(SP_ordinal_pos), "SP_landing_pos": np.array(SP_landing_pos), "SP_fix_dur": np.array(SP_fix_dur),
-			"sub_id": sub_id_list,
-			"SN_newlines": SN_newlines
-			}
+	data = {
+		"SN_input_ids": SN_input_ids,
+		"SN_attention_mask": SN_attention_mask,
+		"SN_WORD_len": SN_WORD_len,
+		"WORD_ids_sn": WORD_ids_sn,
+		"SP_input_ids": SP_input_ids,
+		"SP_attention_mask": SP_attention_mask,
+		"WORD_ids_sp": WORD_ids_sp,
+		"SP_ordinal_pos": np.array(SP_ordinal_pos),
+		"SP_landing_pos": np.array(SP_landing_pos),
+		"SP_fix_dur": np.array(SP_fix_dur),
+		"sub_id": sub_id_list,
+		"SN_newlines": SN_newlines
+	}
 	#print(data["SP_ordinal_pos"])
 
 	return data
@@ -431,8 +488,6 @@ def load_label(sp_pos, cf, labelencoder, device):
 	label = sp_pos[:, 1:]*mask + sac_amp*~mask
 	label = torch.where(label>cf["max_sn_len"]-1, cf["max_sn_len"]-1, label).to('cpu').detach().numpy()
 	label = labelencoder.transform(label.reshape(-1)).reshape(label.shape[0], label.shape[1])
-	if device == 'cpu':
-		pad_mask = pad_mask.to('cpu').detach()#.numpy()
 	label = torch.from_numpy(label).to(device)
 	return pad_mask, label
 
@@ -709,3 +764,190 @@ def one_hot_encode(arr, dim):
 
 def gradient_clipping(dnn_model, clip = 10):
 	torch.nn.utils.clip_grad_norm_(dnn_model.parameters(),clip)
+
+
+
+def _process_meco(sn_df, data_df, cf, reader_list, sn_list, tokenizer):
+	# Initialize lists to store processed data
+	SN_input_ids, SN_attention_mask, SN_WORD_len, WORD_ids_sn = [], [], [], []
+	SP_input_ids, SP_attention_mask, WORD_ids_sp = [], [], []
+	SP_ordinal_pos, SP_landing_pos, SP_fix_dur = [], [], []
+	sub_id_list, raw_split_words = [], []
+	SN_newlines = [] #NEW
+
+	# We need to iterate over the subjects and then over the trialid or itemid
+	for sub_id in tqdm(reader_list):
+		lang_code = sub_id.split('_')[0]
+		#if lang_code not in ['du', 'en', 'ee', 'fi', 'ge', 'it', 'no', 'es', 'tr']:
+		# if lang_code not in ["en"]:
+		# 	continue
+		# Iterate over sentences in the MeCo dataset
+		for sent_id in sn_list:
+			# Extract text by language rowID and column textID
+			text = sn_df.loc[sn_df['Language'] == lang_code, sent_id].iloc[0].replace('"', '')#TODO
+			#print(sent_id)
+			#print(text[:100])
+			subj_fix_df = data_df[(data_df['uniform_id'] == sub_id)\
+       			& (data_df['itemid'] == sent_id)]
+			if len(subj_fix_df) == 0:
+				continue
+			# Processing sentence sequence
+			text_word_len = [len(word) for word in text.split()]  # Assuming word length calculation is similar
+
+			# Tokenization and padding for sentence
+			text_str = '[CLS] ' + text + ' [SEP]'
+			#NEW
+			line_list = text_str.splitlines()
+			#print(line_list)
+			line_len = np.array([len(line.split()) for line in line_list])
+			#print(line_len)
+			cum_line_len = np.cumsum(line_len[:-1])#linebreak not relevant after last line
+			#print(cum_line_len)
+			sn_newlines = np.full(cf["max_sn_len"], False)
+			for i in cum_line_len:
+				sn_newlines[i] = True
+			#print(sn_newlines)
+
+			tokens = tokenizer.encode_plus(text_str.split(),
+										add_special_tokens=False,
+										truncation=True, # Worst case truncate
+										max_length=cf['max_sn_token'],
+										padding='max_length',
+										return_attention_mask=True,
+										is_split_into_words=True)
+
+			encoded_sn = tokens['input_ids']
+			mask_sn = tokens['attention_mask']
+			word_ids_sn = tokens.word_ids()
+			word_ids_sn = [val if val is not None else np.nan for val in word_ids_sn]
+
+			# Process fixation sequence for each subject using uniform_id instead of subid
+			# Extract relevant columns for fixation processing
+			sp_word_pos = subj_fix_df['wordnum'].dropna().values
+			sp_fix_dur = subj_fix_df['dur'].dropna().values
+			sp_landing_pos = subj_fix_df['word.land'].dropna().values
+			sp_words = subj_fix_df['word'].dropna().values.tolist()
+			#print("word: ", sp_words[:20])
+			split_text = re.split(r'(?<=-)\b|\s+', text_str)
+			raw_slit_text = re.split(r'(?<=-)\b|\s+', text)
+			# Processing for scanpath (fixated word sequence)
+			try:
+				sp_token = [split_text[int(i)] for i in sp_word_pos]
+			except IndexError as e:
+				print(f"Index Error: {e}")
+				continue
+
+			sp_token_str = '[CLS] ' + ' '.join(sp_token) + ' [SEP]'
+
+			# Tokenization and padding for scanpath
+			sp_tokens = tokenizer.encode_plus(sp_token_str.split(),
+											add_special_tokens=False,
+											truncation=True, # Worst case truncate
+											max_length=cf['max_sp_token'],
+											padding='max_length',
+											return_attention_mask=True,
+											is_split_into_words=True)
+			encoded_sp = sp_tokens['input_ids']
+			mask_sp = sp_tokens['attention_mask']
+			word_ids_sp = sp_tokens.word_ids()
+			word_ids_sp = [val if val is not None else np.nan for val in word_ids_sp]
+			if len(sp_landing_pos) > cf['max_sp_len']:
+				print("Scanpath length exceeds max length")
+				continue
+			elif len(word_ids_sp) > cf['max_sp_token']:
+				print("Scanpath token length exceeds max length")
+				continue
+			elif len(word_ids_sn) > cf['max_sn_token']:
+				print("Sentence length exceeds max length")
+				continue
+			elif len(word_ids_sn) > cf['max_sn_token']:
+				print("Sentence token length exceeds max length")
+				continue
+			# Append processed data to lists
+			SP_ordinal_pos.append(sp_word_pos)
+			SP_fix_dur.append(sp_fix_dur)
+			SP_input_ids.append(encoded_sp)
+			SP_attention_mask.append(mask_sp)
+			WORD_ids_sp.append(word_ids_sp)
+			SN_input_ids.append(encoded_sn)
+			SN_attention_mask.append(mask_sn)
+			SN_WORD_len.append(text_word_len)
+			WORD_ids_sn.append(word_ids_sn)
+			sub_id_list.append(sub_id)
+			SP_landing_pos.append(sp_landing_pos)
+
+			raw_split_words.append(raw_slit_text)
+
+			SN_newlines.append(sn_newlines)
+
+
+	# Padding for batch computation 
+	raw_sp_pos = SP_ordinal_pos
+
+	SP_ordinal_pos = pad_seq(SP_ordinal_pos, max_len=(cf["max_sp_len"]), pad_value=cf["max_sn_len"])
+	SP_fix_dur = pad_seq(SP_fix_dur, max_len=(cf["max_sp_len"]), pad_value=0)
+	SP_landing_pos = pad_seq(SP_landing_pos, cf["max_sp_len"], pad_value=0, dtype=np.float32)
+	SN_WORD_len = pad_seq_with_nan(SN_WORD_len, cf["max_sn_len"], dtype=np.float32)
+
+	#assign type
+	SN_input_ids = np.asarray(SN_input_ids, dtype=np.int64)
+	SN_attention_mask = np.asarray(SN_attention_mask, dtype=np.float32)
+	SP_input_ids = np.asarray(SP_input_ids, dtype=np.int64)
+	SP_attention_mask = np.asarray(SP_attention_mask, dtype=np.float32)
+
+	sub_id_list = np.asarray(sub_id_list)
+	WORD_ids_sn = np.asarray(WORD_ids_sn)
+	WORD_ids_sp = np.asarray(WORD_ids_sp)
+
+	SN_newlines = np.asarray(SN_newlines)
+
+	# Create the final data structure
+	data = {
+		"SN_input_ids": np.array(SN_input_ids),
+		"SN_attention_mask": np.array(SN_attention_mask),
+		"SN_WORD_len": np.array(SN_WORD_len),
+		"WORD_ids_sn": np.array(WORD_ids_sn),
+		"SP_input_ids": np.array(SP_input_ids),
+		"SP_attention_mask": np.array(SP_attention_mask),
+		"WORD_ids_sp": np.array(WORD_ids_sp),
+		"SP_ordinal_pos": np.array(SP_ordinal_pos),
+		"SP_fix_dur": np.array(SP_fix_dur),
+		"sub_id": np.array(sub_id_list),
+		"SP_landing_pos": np.array(SP_landing_pos),
+		"raw_split_words": raw_split_words,
+		"raw_sp_pos": raw_sp_pos,
+		"SN_newlines": SN_newlines,
+	}
+
+	return data
+
+class mecodataset(Dataset):
+	"""Return celer dataset."""
+	def __init__(self, sn_df, data_df, cf, reader_list, sn_list, tokenizer):
+		self.data = _process_meco(sn_df, data_df, cf, reader_list, sn_list, tokenizer)
+
+	def __len__(self):
+		return len(self.data["SN_input_ids"])
+
+
+	def __getitem__(self,idx):
+		sample = {}
+		sample["sn_input_ids"] = self.data["SN_input_ids"][idx,:]
+		sample["sn_attention_mask"] = self.data["SN_attention_mask"][idx,:]
+		sample["sn_word_len"] = self.data['SN_WORD_len'][idx,:]
+		sample['word_ids_sn'] =  self.data['WORD_ids_sn'][idx,:]
+
+		sample["sp_input_ids"] = self.data["SP_input_ids"][idx,:]
+		sample["sp_attention_mask"] = self.data["SP_attention_mask"][idx,:]
+		sample['word_ids_sp'] =  self.data['WORD_ids_sp'][idx,:]
+
+		sample["sp_pos"] = self.data["SP_ordinal_pos"][idx,:]
+		sample["sp_fix_dur"] = self.data["SP_fix_dur"][idx,:]
+		sample["sp_landing_pos"] = self.data["SP_landing_pos"][idx,:]
+
+		sample["sub_id"] = self.data["sub_id"][idx]
+
+		#NEW: word indices BEFORE which a newline occurs
+		sample["sn_newlines"] = self.data["SN_newlines"][idx,:]
+
+		return sample
