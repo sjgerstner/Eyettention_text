@@ -76,7 +76,7 @@ if __name__ == '__main__':
 			"n_folds": 5,
 			"dataset": 'SB-SAT',
 			"atten_type": args.atten_type,
-			"batch_size": 8,#TODO
+			"batch_size": 32,#TODO
 			#following 4 lines CHANGED. Can't get more than 512 tokens into BERT!#TODO
 			"max_sn_len": 148, #max number of words in a sentence, include start token and end token, #or 512? #needs to be the actual sn len + 2 for the CLS
 			"max_sn_token": 183, #maximum number of tokens a sentence includes. include start token and end token
@@ -147,13 +147,24 @@ if __name__ == '__main__':
 	landing_pos_mean, landing_pos_std = calculate_mean_std(dataloader=train_dataloaderr, feat_key="sp_landing_pos", padding_value=0)
 	sn_word_len_mean, sn_word_len_std = calculate_mean_std(dataloader=train_dataloaderr, feat_key="sn_word_len")
 
+	loss_dict['fix_dur_mean'] = fix_dur_mean
+	loss_dict['fix_dur_std'] = fix_dur_std
+	loss_dict['landing_pos_mean'] = landing_pos_mean
+	loss_dict['landing_pos_std'] = landing_pos_std
+	loss_dict['sn_word_len_mean'] = sn_word_len_mean
+	loss_dict['sn_word_len_std'] = sn_word_len_std
+	#save results
+	print('saving summary stats...')
+	with open('{}/res_CELER_{}_eyettention_{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type), 'wb') as handle:
+		pickle.dump(loss_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+	print('done')
+
 	# load model
 	dnn = Eyettention(cf)
 
 	#training
 	episode = 0
 	optimizer = Adam(dnn.parameters(), lr=cf["lr"])
-	dnn.train()
 	dnn.to(device)
 	av_score = deque(maxlen=100)
 	old_score = 1e10
@@ -284,7 +295,7 @@ if __name__ == '__main__':
 				break
 
 	if bool(args.scanpath_gen_flag) == True:
-		print("saving...")
+		print("saving model...")
 		#save results
 		dic = {"sp_dnn": sp_dnn_list, "sp_human": sp_human_list}
 		with open(os.path.join(args.save_data_folder, f'SAT_scanpath_generation_eyettention_{args.test_mode}_{args.atten_type}.pickle'), 'wb') as handle:
