@@ -70,8 +70,6 @@ print(device)
 sp_dnn_list = []
 sp_human_list = []
 
-best_llh = -np.infty
-
 loss_dict = {}
 
 #load model
@@ -79,12 +77,13 @@ cf = {"model_pretrained": "bert-base-cased",
 			"lr": 1e-3,
 			"max_grad_norm": 10,
 			"n_epochs": 1000,
-			"n_folds": 5,#TODO
+			#"n_folds": 5,
 			"dataset": 'meco',
 			"atten_type": args.atten_type,
-			"batch_size": 2,#TODO
+			"batch_size": 32,#TODO
 			#following 4 lines CHANGED. Can't get more than 512 tokens into BERT!#TODO
-			"max_sn_len": 148, #TODO change to 201 for meco
+			"max_sn_len": 201, #at least 201 for meco
+            "max_saccade_len": 148,#same architecture as the trained model
 			"max_sn_token": 183, #maximum number of tokens a sentence includes. include start token and end token
 			"max_sp_len": 396, #max number of words in a scanpath, include start token and end token #or 1130? #needs to be the actual sp len + 2 for the CLS
 			"max_sp_token": 512, #maximum number of tokens a scanpath includes. include start token and end token UNNECESSARY
@@ -96,14 +95,12 @@ cf = {"model_pretrained": "bert-base-cased",
 
 dnn = Eyettention(cf)
 
-fold_indx=0#TODO
-
-with open('{}/res_SAT_{}_eyettention_{}_Fold{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type, fold_indx), 'r') as handle:
+with open('{}/res_SAT_{}_eyettention_{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type), 'r') as handle:
 	ld = pickle.load(handle)
      
 #Encode the label into interger categories, setting the exclusive category 'cf["max_sn_len"]-1' as the end sign
 le = LabelEncoder()
-le.fit(np.append(np.arange(-cf["max_sn_len"]+3, cf["max_sn_len"]-1), cf["max_sn_len"]-1))
+le.fit(np.append(np.arange(-cf["max_saccade_len"]+3, cf["max_saccade_len"]-1), cf["max_saccade_len"]-1))
 
 #eval data
 data_df, sn_df, reader_list = load_corpus(cf["dataset"])
@@ -121,7 +118,7 @@ sn_word_len_mean, sn_word_len_std = ld['sn_word_len_mean'], ld['sn_word_len_std'
 #evaluation
 dnn.eval()
 res_llh=[]
-dnn.load_state_dict(torch.load(os.path.join(args.save_data_folder,f'CELoss_SAT_{args.test_mode}_eyettention_{args.atten_type}_newloss_fold{fold_indx}.pth'), map_location='cpu'))
+dnn.load_state_dict(torch.load(os.path.join(args.save_data_folder,f'CELoss_SAT_{args.test_mode}_eyettention_{args.atten_type}.pth'), map_location='cpu'))
 dnn.to(device)
 batch_indx = 0
 for batchh in test_dataloaderr:
@@ -200,11 +197,7 @@ loss_dict['landing_pos_std'] = landing_pos_std
 loss_dict['sn_word_len_mean'] = sn_word_len_mean
 loss_dict['sn_word_len_std'] = sn_word_len_std
 print('\nTest likelihood is {} \n'.format(np.mean(res_llh)))
-#ADDED find best fold:
-if np.mean(res_llh) > best_llh:
-    best_llh = np.mean(res_llh)
-    best_fold = fold_indx
-print('Currently the best fold is', best_fold)
+
 #save results
-with open('{}/res_SAT_{}_eyettention_{}_Fold{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type, fold_indx), 'wb') as handle:
+with open('{}/res_SAT_MECO_{}_eyettention_{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type), 'wb') as handle:
     pickle.dump(loss_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
