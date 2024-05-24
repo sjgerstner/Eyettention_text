@@ -489,6 +489,7 @@ def load_label(sp_pos, cf, labelencoder, device):
 	label = torch.where(label>cf["max_saccade_len"]-1, cf["max_saccade_len"]-1, label).to('cpu').detach()
 	label = torch.where(label<-cf["max_saccade_len"]+3, -cf["max_saccade_len"]+3, label).to('cpu').detach().numpy()
 	label = labelencoder.transform(label.reshape(-1)).reshape(label.shape[0], label.shape[1])
+	pad_mask = pad_mask.to('cpu').detach().numpy()
 	label = torch.from_numpy(label).to(device)
 	return pad_mask, label
 
