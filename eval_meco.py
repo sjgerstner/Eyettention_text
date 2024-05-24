@@ -201,3 +201,11 @@ print('\nTest likelihood is {} \n'.format(np.mean(res_llh)))
 #save results
 with open('{}/res_SAT_MECO_{}_eyettention_{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type), 'wb') as handle:
     pickle.dump(loss_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+if bool(args.scanpath_gen_flag) == True:
+    print("saving generated scanpath...")
+    #save results
+    dic = {"sp_dnn": sp_dnn_list, "sp_human": sp_human_list}
+    with open(os.path.join(args.save_data_folder, f'SAT_MECO_scanpath_generation_eyettention_{args.test_mode}_{args.atten_type}.pickle'), 'wb') as handle:
+        pickle.dump(dic, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    print("Finished!")
