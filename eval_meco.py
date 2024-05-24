@@ -95,7 +95,7 @@ cf = {"model_pretrained": "bert-base-cased",
 
 dnn = Eyettention(cf)
 
-with open('{}/res_SAT_{}_eyettention_{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type), 'r') as handle:
+with open('{}/res_SAT_{}_eyettention_{}.pickle'.format(args.save_data_folder, args.test_mode, args.atten_type), 'rb') as handle:
 	ld = pickle.load(handle)
      
 #Encode the label into interger categories, setting the exclusive category 'cf["max_sn_len"]-1' as the end sign
