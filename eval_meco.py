@@ -71,6 +71,7 @@ sp_dnn_list = []
 sp_human_list = []
 
 loss_dict = {}
+loss_dict['test_ll'] = []
 
 #load model
 cf = {"model_pretrained": "bert-base-cased",
@@ -122,6 +123,7 @@ dnn.load_state_dict(torch.load(os.path.join(args.save_data_folder,f'CELoss_SAT_{
 dnn.to(device)
 batch_indx = 0
 for batchh in test_dataloaderr:
+    print("evaluating batch nr.", batch_indx)
     with torch.no_grad():
         sn_input_ids_test = batchh["sn_input_ids"].to(device)
         sn_attention_mask_test = batchh["sn_attention_mask"].to(device)
