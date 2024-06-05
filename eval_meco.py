@@ -107,6 +107,7 @@ le.fit(np.append(np.arange(-cf["max_saccade_len"]+3, cf["max_saccade_len"]-1), c
 #eval data
 data_df, sn_df, reader_list = load_corpus(cf["dataset"])
 sn_list = [col for col in sn_df.columns if col != 'Language']
+sent_list = [sn_df.loc[sent_id].iloc[0].replace('"', '') for sent_id in sn_list]
 
 tokenizer = BertTokenizerFast.from_pretrained(cf['model_pretrained'])
 
@@ -142,8 +143,8 @@ for batchh in test_dataloaderr:
         sn_newlines_test = batchh["sn_newlines"].to(device)
 
         #reconstruct text for reference, including newlines
-        keyword = tokenizer.decode(sn_input_ids_test[2])#first actual word after cls and perhaps a function word - works only for this dataset!
-        text_with_newlines = next(text for text in sn_list if text.split()[1]==keyword)
+        keyword = tokenizer.decode(sn_input_ids_test[1:3])#first two tokens after cls - may not be enough info in other datasets!
+        text_with_newlines = next(text for text in sent_list if text.startswith(keyword))
 
         #normalize gaze features
         mask = ~torch.eq(sp_fix_dur_test, 0)
