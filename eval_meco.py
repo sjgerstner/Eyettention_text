@@ -107,7 +107,7 @@ le.fit(np.append(np.arange(-cf["max_saccade_len"]+3, cf["max_saccade_len"]-1), c
 #eval data
 data_df, sn_df, reader_list = load_corpus(cf["dataset"])
 sn_list = [col for col in sn_df.columns if col != 'Language']
-sent_list = [sn_df.loc[sent_id].iloc[0].replace('"', '') for sent_id in sn_list]
+sent_list = [sn_df.loc[sn_df['Language']=='en',col].iloc[0].replace('"', '').replace("\\n", "\n") for col in sn_list]
 
 tokenizer = BertTokenizerFast.from_pretrained(cf['model_pretrained'])
 
