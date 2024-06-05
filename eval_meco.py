@@ -69,7 +69,7 @@ print(device)
 #initialisations
 sp_dnn_list = []
 sp_human_list = []
-batch_list = []
+text_list = []
 
 loss_dict = {}
 loss_dict['test_ll'] = []
@@ -141,6 +141,9 @@ for batchh in test_dataloaderr:
 
         sn_newlines_test = batchh["sn_newlines"].to(device)
 
+        #reconstruct text for reference, including newlines
+        keyword = tokenizer.decode(sn_input_ids_test[2])#first actual word after cls and perhaps a function word - works only for this dataset!
+        text_with_newlines = next(text for text in sn_list if text.split()[1]==keyword)
 
         #normalize gaze features
         mask = ~torch.eq(sp_fix_dur_test, 0)
@@ -188,7 +191,7 @@ for batchh in test_dataloaderr:
             sp_dnn, sp_human = prepare_scanpath(sp_dnn[0].detach().to('cpu').numpy(), sn_len, sp_pos_test, cf)
             sp_dnn_list.extend(sp_dnn)
             sp_human_list.extend(sp_human)
-            batch_list.extend(batchh)
+            text_list.extend(text_with_newlines)
 
         batch_indx +=1
 
@@ -209,7 +212,7 @@ with open('{}/res_SAT_MECO_{}_eyettention_{}.pickle'.format(args.save_data_folde
 if bool(args.scanpath_gen_flag) == True:
     print("saving generated scanpath...")
     #save results
-    dic = {"sp_dnn": sp_dnn_list, "sp_human": sp_human_list, "batch": batch_list}
+    dic = {"sp_dnn": sp_dnn_list, "sp_human": sp_human_list, "text": text_list}
     with open(os.path.join(args.save_data_folder, f'SAT_MECO_scanpath_generation_eyettention_{args.test_mode}_{args.atten_type}.pickle'), 'wb') as handle:
         pickle.dump(dic, handle, protocol=pickle.HIGHEST_PROTOCOL)
     print("Finished!")
