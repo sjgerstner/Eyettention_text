@@ -139,8 +139,8 @@ class Eyettention(nn.Module):
 			#print('aligned_position', aligned_position.shape)
 			#print('sn_mask', sn_mask.shape)
 			#line borders
-			line_start = torch.zeros([sn_mask.shape[0]])
-			line_end = torch.full([sn_mask.shape[0]], self.cf['max_sn_len'])
+			line_start = torch.zeros([sn_mask.shape[0]]).to(sn_mask.device)
+			line_end = torch.full([sn_mask.shape[0]], self.cf['max_sn_len']).to(sn_mask.device)
 			#print(line_start.shape)
 			if sn_newlines is not None:
 				for item in range(sn_mask.shape[0]):
